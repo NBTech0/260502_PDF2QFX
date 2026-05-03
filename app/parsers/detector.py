@@ -4,6 +4,21 @@ from app.models.statement import AccountType
 from app.parsers.base_parser import UnknownStatementError
 
 
+def is_account_overview(pdf_path: str) -> bool:
+    """Return True if the PDF is a BMO 'Account Overview' web-print export."""
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            # Image-based (browser print): identify by PDF title metadata
+            title = (pdf.metadata.get("Title") or "").lower()
+            if "account overview" in title:
+                return True
+            # Text-based version: column headers unique to this format
+            text = (pdf.pages[0].extract_text() or "").lower()
+            return "money out" in text and "money in" in text
+    except Exception:
+        return False
+
+
 def detect_statement_type(pdf_path: str) -> AccountType:
     try:
         with pdfplumber.open(pdf_path) as pdf:

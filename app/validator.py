@@ -56,7 +56,9 @@ def validate_statement(statement: Statement, pdf_path: str) -> None:
     if statement.account_type == AccountType.CREDITCARD:
         _validate_cc(full_text, net, warnings)
     else:
-        _validate_bank(full_text, net, warnings)
+        _validate_bank(full_text, net, warnings,
+                       current_balance=statement.ledger_balance)
+        _validate_balance_chain(statement, warnings)
 
 
 def _validate_cc(text: str, net: float, warnings: list[str]) -> None:
@@ -98,7 +100,12 @@ def _validate_cc(text: str, net: float, warnings: list[str]) -> None:
         )
 
 
-def _validate_bank(text: str, net: float, warnings: list[str]) -> None:
+def _validate_bank(
+    text: str,
+    net: float,
+    warnings: list[str],
+    current_balance: float | None = None,
+) -> None:
     opening = _find_amount(
         text,
         r"[Oo]pening\s+[Bb]alance[^0-9$]{0,20}([\d,]+\.\d{2})",
@@ -109,7 +116,17 @@ def _validate_bank(text: str, net: float, warnings: list[str]) -> None:
     )
 
     if opening is None or closing is None:
-        warnings.append("WARN  Could not find Opening/Closing Balance in PDF — skipping balance check")
+        # Account Overview format: has "Current balance" but no Opening/Closing Balance.
+        # Try text first; fall back to the value already parsed from the PDF.
+        current = _find_amount(
+            text,
+            r"[Cc]urrent\s+balance\s*\$?([\d,]+\.\d{2})",
+        ) or current_balance
+        if current is not None:
+            warnings.append(f"PDF   Current Balance: ${current:,.2f}")
+            warnings.append("INFO  Account Overview format — opening balance not in PDF, skipping balance check")
+        else:
+            warnings.append("WARN  Could not find Opening/Closing Balance in PDF — skipping balance check")
         return
 
     warnings.append(f"PDF   Opening Balance: ${opening:,.2f}   Closing Balance: ${closing:,.2f}")
@@ -134,3 +151,53 @@ def _diff_hint(diff: float) -> str:
     if diff < 1:
         return "likely a rounding difference"
     return "possible missing or duplicate transactions"
+
+
+def _parse_raw_balance(value: object) -> float | None:
+    s = str(value or "").strip()
+    if not s or not re.search(r"\d", s):
+        return None
+    try:
+        negative = s.startswith("-")
+        cleaned = re.sub(r"[^\d.]", "", s)
+        return -float(cleaned) if negative else float(cleaned)
+    except ValueError:
+        return None
+
+
+def _validate_balance_chain(statement: Statement, warnings: list[str]) -> None:
+    """
+    For each consecutive pair of transactions (oldest-first), verify:
+        balance[i] + amount[i+1] ≈ balance[i+1]
+    Uses raw_row[4] (OCR balance column) as ground truth.
+    Flags any pair whose difference exceeds $0.02.
+    """
+    txns = statement.transactions  # oldest-first after parse
+    checked = flagged = 0
+    for i in range(1, len(txns)):
+        prev, curr = txns[i - 1], txns[i]
+        if len(getattr(prev, "raw_row", [])) < 5 or len(getattr(curr, "raw_row", [])) < 5:
+            continue
+        bal_prev = _parse_raw_balance(prev.raw_row[4])
+        bal_curr = _parse_raw_balance(curr.raw_row[4])
+        if bal_prev is None or bal_curr is None:
+            continue
+        expected = round(bal_prev + curr.amount, 2)
+        diff = abs(expected - bal_curr)
+        checked += 1
+        if diff > _TOLERANCE:
+            flagged += 1
+            warnings.append(
+                f"WARN  {curr.transaction_date} "
+                f"{curr.description[:35]:<35} "
+                f"amount={curr.amount:+.2f}  "
+                f"balance expected={expected:.2f} actual={bal_curr:.2f}  "
+                f"diff={expected - bal_curr:+.2f}"
+            )
+    if checked:
+        status = "OK" if flagged == 0 else "WARN"
+        warnings.append(
+            f"CHAIN {checked} balance-chain checks: {checked - flagged} OK, {flagged} flagged"
+            if flagged else
+            f"CHAIN {checked} balance-chain checks: all OK"
+        )

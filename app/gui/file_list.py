@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 import customtkinter as ctk
 
-from app.parsers.detector import detect_statement_type
+from app.parsers.detector import detect_statement_type, is_account_overview
 from app.models.statement import AccountType
 
 
@@ -92,8 +92,11 @@ class FileListWidget(ctk.CTkScrollableFrame):
 
     def _detect_type(self, path: str) -> None:
         try:
-            account_type = detect_statement_type(path)
-            label = _TYPE_LABELS.get(account_type, account_type.value)
+            if is_account_overview(path):
+                label = "BMO Overview"
+            else:
+                account_type = detect_statement_type(path)
+                label = _TYPE_LABELS.get(account_type, account_type.value)
         except Exception:
             label = "Unknown"
         self.after(0, self._update_type_label, path, label)
