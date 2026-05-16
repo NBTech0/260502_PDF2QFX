@@ -67,8 +67,10 @@ def _render_transactions(transactions: list[Transaction], account_id: str) -> st
         lines.append(f"<FITID>{fitid}")
         name = _esc(txn.description[:32])
         lines.append(f"<NAME>{name}")
-        if len(txn.description) > 32:
-            lines.append(f"<MEMO>{_esc(txn.description[:255])}")
+        # Always write MEMO with the full description so reference numbers
+        # are preserved even when Quicken replaces the payee name (e.g. for
+        # TF transfers it substitutes the linked account name).
+        lines.append(f"<MEMO>{_esc(txn.description[:255])}")
         lines.append("</STMTTRN>")
     return "\n".join(lines)
 
