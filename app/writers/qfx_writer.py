@@ -100,15 +100,17 @@ def _signon_block(server_dt: str, intu_bid: str) -> str:
 
 def _bank_body(stmt: Statement, txn_block: str, dt_start: str, dt_end: str) -> str:
     acct_type = stmt.account_type.value  # CHECKING or SAVINGS
-    bal_block = ""
-    if stmt.ledger_balance is not None:
-        bal_dt = _fmt_date(stmt.ledger_balance_date)
-        bal_block = (
-            "<LEDGERBAL>\n"
-            f"<BALAMT>{stmt.ledger_balance:.2f}\n"
-            f"<DTASOF>{bal_dt}\n"
-            "</LEDGERBAL>\n"
-        )
+    # <LEDGERBAL> is required by Quicken for bank accounts; omitting it
+    # causes OL-221-A on import.  Fall back to 0.00 if the PDF didn't
+    # include a closing balance.
+    bal_amt = stmt.ledger_balance if stmt.ledger_balance is not None else 0.00
+    bal_dt = _fmt_date(stmt.ledger_balance_date)
+    bal_block = (
+        "<LEDGERBAL>\n"
+        f"<BALAMT>{bal_amt:.2f}\n"
+        f"<DTASOF>{bal_dt}\n"
+        "</LEDGERBAL>\n"
+    )
     return (
         "<BANKMSGSRSV1>\n"
         "<STMTTRNRS>\n"
