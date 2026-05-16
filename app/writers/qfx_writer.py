@@ -23,7 +23,9 @@ OLDFILEUID:NONE
 NEWFILEUID:NONE
 """
 
-_BMO_BANKID = "00001"
+_BMO_INTU_BID_CC   = "00017"   # BMO Mastercard (from reference file)
+_BMO_INTU_BID_BANK = "00001"   # BMO Bank (institution number 001)
+_BMO_BANKID        = "00001"
 
 
 def _fmt_date(d: date | None) -> str:
@@ -79,9 +81,7 @@ def _date_range(transactions: list[Transaction]) -> tuple[str, str]:
     return _fmt_date(min(dates)), _fmt_date(max(dates))
 
 
-def _signon_block(server_dt: str) -> str:
-    # Omit <INTU.BID> — including it causes Quicken to attempt a Direct
-    # Connect handshake with the bank, producing OL-221-A on file imports.
+def _signon_block(server_dt: str, intu_bid: str) -> str:
     return (
         "<SIGNONMSGSRSV1>\n"
         "<SONRS>\n"
@@ -92,6 +92,7 @@ def _signon_block(server_dt: str) -> str:
         "</STATUS>\n"
         f"<DTSERVER>{server_dt}\n"
         "<LANGUAGE>ENG\n"
+        f"<INTU.BID>{intu_bid}\n"
         "</SONRS>\n"
         "</SIGNONMSGSRSV1>"
     )
@@ -178,10 +179,11 @@ def _cc_body(stmt: Statement, txn_block: str, dt_start: str, dt_end: str) -> str
 
 def write_qfx(statement: Statement, output_path: str) -> None:
     server_dt = _fmt_server_dt()
+    intu_bid = _BMO_INTU_BID_CC if statement.account_type == AccountType.CREDITCARD else _BMO_INTU_BID_BANK
     txn_block = _render_transactions(statement.transactions, statement.account_id)
     dt_start, dt_end = _date_range(statement.transactions)
 
-    signon = _signon_block(server_dt)
+    signon = _signon_block(server_dt, intu_bid)
 
     if statement.account_type == AccountType.CREDITCARD:
         body = _cc_body(statement, txn_block, dt_start, dt_end)
