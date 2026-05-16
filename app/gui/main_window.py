@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import threading
 from tkinter import filedialog, messagebox
@@ -11,6 +12,25 @@ from app.converter import convert_pdf_to_qfx
 from app.gui.drop_zone import DropZone
 from app.gui.file_list import FileListWidget
 from app.gui.log_panel import LogPanel
+
+_CONFIG_PATH = os.path.join(
+    os.environ.get("APPDATA", os.path.expanduser("~")),
+    "BMOConverter", "config.json",
+)
+
+
+def _load_config() -> dict:
+    try:
+        with open(_CONFIG_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_config(data: dict) -> None:
+    os.makedirs(os.path.dirname(_CONFIG_PATH), exist_ok=True)
+    with open(_CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
 
 
 class App(ctk.CTk, TkinterDnD.DnDWrapper):
@@ -27,8 +47,20 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         self.geometry("860x660")
         self.minsize(660, 520)
 
-        self._output_dir = ctk.StringVar(value=os.path.expanduser("~\\Documents"))
+        cfg = _load_config()
+        default_dir = os.path.expanduser("~\\Documents")
+        saved_dir = cfg.get("output_dir", default_dir)
+        if not os.path.isdir(saved_dir):
+            saved_dir = default_dir
+        self._output_dir = ctk.StringVar(value=saved_dir)
+        self._output_dir.trace_add("write", self._on_output_dir_changed)
+
         self._build_ui()
+
+    def _on_output_dir_changed(self, *_) -> None:
+        d = self._output_dir.get().strip()
+        if os.path.isdir(d):
+            _save_config({"output_dir": d})
 
     def _build_ui(self) -> None:
         self.grid_rowconfigure(3, weight=2)   # file list grows
@@ -179,4 +211,4 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         if errors:
             summary += f", {errors} failed"
         self._log.log(summary)
-        self.after(0, self._convert_btn.configure, {"state": "normal", "text": "Convert All"})
+        self.after(0, lambda: self._convert_btn.configure(state="normal", text="Convert All"))
