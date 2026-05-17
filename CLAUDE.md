@@ -81,6 +81,7 @@ LOC uses `CREDITCARDMSGSRSV1` / `<CCACCTFROM>` (same as Mastercard) with `INTU.B
 - `February 11, 2026.pdf` — 7 transactions, balance check PASSED
 - `March 11, 2026.pdf` — 11 transactions, balance check PASSED
 - `April 11, 2026.pdf` — 11 transactions (incl. 2 bold rows that extract_text merges), balance check PASSED ($65,716.93 → $280.72)
+- `May 11, 2026.pdf` — 5 transactions, balance check PASSED ($280.72 → $8,720.99). Note: dates encoded without space ("May1", "May11") — handled by `_expand()`; previous balance split across lines — handled by DOTALL fallback in validator.
 
 ## Validator (`validator.py`)
 Runs after parsing. Routes by account type:
@@ -105,6 +106,7 @@ OFX v1.02 SGML format. Key rules learned from Quicken import testing:
 - Output folder is persisted to `%APPDATA%\BMOConverter\config.json` via a `StringVar` trace. Restored on startup; falls back to `~\Documents` if the saved path no longer exists.
 - Convert button reset uses `self.after(0, lambda: self._convert_btn.configure(...))` — CTkButton does not accept a positional dict like standard tkinter, so the lambda form is required.
 - Conversions run in a `daemon=True` background thread; GUI updates use `self.after(0, fn)`.
+- **Multi-file Quicken import**: always wait between files — Quicken holds an exclusive Web Connect session while processing each import; sending the next file immediately triggers "a session is already in progress". 5-second pause when Quicken is already running; 8-second pause on cold start.
 
 ## Tested PDFs
 - `Account overview - BMO.pdf` — 100 transactions, all balance-chain checks OK
@@ -114,6 +116,7 @@ OFX v1.02 SGML format. Key rules learned from Quicken import testing:
 - `February 11, 2026.pdf` (LOC) — 7 transactions, balance check PASSED
 - `March 11, 2026.pdf` (LOC) — 11 transactions, balance check PASSED
 - `April 11, 2026.pdf` (LOC) — 11 transactions, balance check PASSED
+- `May 11, 2026.pdf` (LOC) — 5 transactions, balance check PASSED
 
 ## Known Limitations
 - Account Overview PDFs with page breaks mid-transaction may produce flagged balance-chain entries; user can correct manually. In practice BMO does not break transactions across pages.
