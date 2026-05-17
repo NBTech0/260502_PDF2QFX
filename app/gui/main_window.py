@@ -228,22 +228,27 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
             def _cb(msg: str, _flag: list = had_warning) -> None:
                 if msg.startswith("WARN"):
                     _flag[0] = True
-                self._log.log(msg)
+                    self._log.log(msg, level="warn")
+                else:
+                    self._log.log(msg)
 
             try:
                 out_path = convert_pdf_to_qfx(path, output_dir, progress_callback=_cb)
-                self.after(0, self._file_list.set_status, path, "Done")
-                if not had_warning[0]:
-                    clean_qfx.append(out_path)
-                else:
+                if had_warning[0]:
+                    self.after(0, self._file_list.set_status, path, "Done (warn)")
                     self._log.log(
-                        f"Skipping Quicken auto-open for {os.path.basename(out_path)}"
-                        " — review warnings above before importing"
+                        f"Not auto-importing {os.path.basename(out_path)}"
+                        " — review warnings above before importing manually",
+                        level="warn",
                     )
+                else:
+                    self.after(0, self._file_list.set_status, path, "Done")
+                    clean_qfx.append(out_path)
             except Exception as exc:
                 errors += 1
                 self.after(0, self._file_list.set_status, path, "Error")
-                self._log.log(f"ERROR [{os.path.basename(path)}]: {exc}")
+                self._log.log(f"ERROR [{os.path.basename(path)}]: {exc}",
+                              level="error")
 
         summary = f"Finished. {len(paths) - errors} succeeded"
         if errors:
@@ -264,3 +269,4 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
                     self._log.log("Waiting for Quicken to finish starting...")
                     time.sleep(8)
                 open_in_quicken(qfx_path, log=self._log.log)
+        self._log.log("─" * 48)

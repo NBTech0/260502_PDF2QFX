@@ -17,11 +17,12 @@ _TYPE_LABELS = {
 }
 
 _STATUS_COLORS = {
-    "Pending":      ("gray60", "gray40"),
-    "Detecting...": ("gray60", "gray40"),
+    "Pending":       ("gray60", "gray40"),
+    "Detecting...":  ("gray60", "gray40"),
     "Converting...": ("#E67E22", "#CA6F1E"),
-    "Done":    ("#27AE60", "#1E8449"),
-    "Error":        ("#E74C3C", "#C0392B"),
+    "Done":          ("#27AE60", "#1E8449"),
+    "Done (warn)":   ("#F39C12", "#D68910"),   # amber — converted but has warnings
+    "Error":         ("#E74C3C", "#C0392B"),
 }
 
 
