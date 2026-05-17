@@ -102,7 +102,7 @@ class BMOMastercardParser(BaseParser):
             if cells[0] and _COL_HEADERS.match(cells[0]):
                 continue
             # Skip section headers
-            if cells[1] and _SECTION_HEADERS.match(cells[1]):
+            if len(cells) > 1 and cells[1] and _SECTION_HEADERS.match(cells[1]):
                 continue
             if cells[0] and _SECTION_HEADERS.match(cells[0]):
                 continue
