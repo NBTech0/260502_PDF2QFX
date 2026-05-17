@@ -251,19 +251,16 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         self._log.log(summary)
         self.after(0, lambda: self._convert_btn.configure(state="normal", text="Convert All"))
 
-        # Open each clean QFX in Quicken one at a time.  Rapid back-to-back
-        # subprocess calls confuse Quicken's single-instance check, so we wait
-        # for it to finish starting (or finishing an import) between files.
+        # Open each clean QFX in Quicken one at a time.
+        # When Quicken is already running, back-to-back calls are fine.
+        # When it needs a cold start, wait for it to finish loading before
+        # sending subsequent files.
         if self._open_in_quicken.get() and clean_qfx:
             quicken_was_running = is_quicken_running()
             for i, qfx_path in enumerate(clean_qfx):
-                if i > 0:
-                    # Give Quicken time to present the previous import dialog
-                    # before passing the next file.
-                    time.sleep(4)
-                elif not quicken_was_running:
-                    # First file and Quicken needs to cold-start — open_in_quicken
-                    # will log "Launching Quicken..." but we don't need an extra
-                    # sleep here; Quicken loads the file during its own startup.
-                    pass
+                if i > 0 and not quicken_was_running:
+                    # Quicken was just launched for the first file — give it
+                    # time to finish starting before passing the next one.
+                    self._log.log("Waiting for Quicken to finish starting...")
+                    time.sleep(8)
                 open_in_quicken(qfx_path, log=self._log.log)
