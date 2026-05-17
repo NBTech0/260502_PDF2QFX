@@ -12,7 +12,7 @@ from app.converter import convert_pdf_to_qfx
 from app.gui.drop_zone import DropZone
 from app.gui.file_list import FileListWidget
 from app.gui.log_panel import LogPanel
-from app.quicken_launcher import open_in_quicken
+from app.quicken_launcher import is_quicken_running, open_in_quicken
 
 _CONFIG_PATH = os.path.join(
     os.environ.get("APPDATA", os.path.expanduser("~")),
@@ -213,11 +213,16 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         thread.start()
 
     def _run_conversions(self, paths: list[str], output_dir: str) -> None:
+        import time
+
         errors = 0
+        clean_qfx: list[str] = []   # QFX paths that converted without any WARN
+
         for path in paths:
             self.after(0, self._file_list.set_status, path, "Converting...")
 
-            # Track whether any WARN line was emitted for this file
+            # Per-file warning flag — must be a fresh list each iteration so
+            # a warning on one file never contaminates the next.
             had_warning: list[bool] = [False]
 
             def _cb(msg: str, _flag: list = had_warning) -> None:
@@ -228,11 +233,13 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
             try:
                 out_path = convert_pdf_to_qfx(path, output_dir, progress_callback=_cb)
                 self.after(0, self._file_list.set_status, path, "Done")
-
-                # Open in Quicken if the option is enabled and no warnings were raised
-                if self._open_in_quicken.get() and not had_warning[0]:
-                    open_in_quicken(out_path, log=self._log.log)
-
+                if not had_warning[0]:
+                    clean_qfx.append(out_path)
+                else:
+                    self._log.log(
+                        f"Skipping Quicken auto-open for {os.path.basename(out_path)}"
+                        " — review warnings above before importing"
+                    )
             except Exception as exc:
                 errors += 1
                 self.after(0, self._file_list.set_status, path, "Error")
@@ -243,3 +250,20 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
             summary += f", {errors} failed"
         self._log.log(summary)
         self.after(0, lambda: self._convert_btn.configure(state="normal", text="Convert All"))
+
+        # Open each clean QFX in Quicken one at a time.  Rapid back-to-back
+        # subprocess calls confuse Quicken's single-instance check, so we wait
+        # for it to finish starting (or finishing an import) between files.
+        if self._open_in_quicken.get() and clean_qfx:
+            quicken_was_running = is_quicken_running()
+            for i, qfx_path in enumerate(clean_qfx):
+                if i > 0:
+                    # Give Quicken time to present the previous import dialog
+                    # before passing the next file.
+                    time.sleep(4)
+                elif not quicken_was_running:
+                    # First file and Quicken needs to cold-start — open_in_quicken
+                    # will log "Launching Quicken..." but we don't need an extra
+                    # sleep here; Quicken loads the file during its own startup.
+                    pass
+                open_in_quicken(qfx_path, log=self._log.log)
