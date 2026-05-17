@@ -257,16 +257,20 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         self.after(0, lambda: self._convert_btn.configure(state="normal", text="Convert All"))
 
         # Open each clean QFX in Quicken one at a time.
-        # When Quicken is already running, back-to-back calls are fine.
-        # When it needs a cold start, wait for it to finish loading before
-        # sending subsequent files.
+        # Always wait between files: Quicken's Web Connect mechanism holds an
+        # exclusive session while processing each import, and sending the next
+        # file before the session closes triggers "a session is already in
+        # progress".  Cold-start needs extra time for the app to finish loading.
         if self._open_in_quicken.get() and clean_qfx:
             quicken_was_running = is_quicken_running()
             for i, qfx_path in enumerate(clean_qfx):
-                if i > 0 and not quicken_was_running:
-                    # Quicken was just launched for the first file — give it
-                    # time to finish starting before passing the next one.
-                    self._log.log("Waiting for Quicken to finish starting...")
-                    time.sleep(8)
+                if i > 0:
+                    if not quicken_was_running:
+                        self._log.log("Waiting for Quicken to finish starting...")
+                        time.sleep(8)
+                    else:
+                        # Give the previous Web Connect session time to close.
+                        self._log.log("Waiting for previous import to complete...")
+                        time.sleep(5)
                 open_in_quicken(qfx_path, log=self._log.log)
         self._log.log("─" * 48)
