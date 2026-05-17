@@ -58,20 +58,29 @@ BMO's CSS renders the `-` sign in the "Money out" column at a slightly lower ver
 ## Parser: BMO Line of Credit (`bmo_loc.py`)
 Handles BMO Personal Line of Credit monthly statements (e.g. `January 11, 2026.pdf`).
 
+### Extraction approach — word-box grouping (NOT extract_text)
+`_parse_text` uses `page.extract_words(x_tolerance=2, y_tolerance=2)` on each page independently, then groups words into y-bands with a 2 pt tolerance.  **Do NOT switch back to `extract_text()`** — BMO renders bold characters twice at a ~3 pt vertical offset, causing `extract_text()` to merge adjacent bold transactions into a single garbled line (e.g. items 3 and 4 in April both at "Mar 20" merge into one unreadable blob).
+
+Each transaction spans up to three consecutive y-bands:
+- **Primary band** (starts with item number): `[item#, txMonth, txDay, postMonth, postDay, amount]`
+- **Description band** (~3 pt below): `[word, word, ..., CR]` — `CR` at end signals a credit
+- **Dot band** (~6 pt below): `[., .]` — stray artefacts from "Mar." rendering; triggers a flush
+
+Pages are processed independently (no cross-page y-coordinate merging) to prevent page 2's legal text from contaminating page 1's transaction bands.
+
 ### Key behaviours
-- **Two-column layout**: transactions on the left side; an "at a glance" summary on the right. pdfplumber inserts `!` characters at column boundaries — each line is truncated at the first `!` to strip the right column.
-- **Right-column overflow on transaction lines**: some transaction lines have the at-a-glance text appended after the amount (e.g. `1,000.00 - !Credit adjustments`). The line is further truncated at the first amount (`[\d,]+\.\d{2}(?:\s*CR?)?`) so everything after it is discarded.
-- **Stray-dot dates**: BMO renders dates as `"Dec .18"`, `"Jan. .6"`, `"Jan 11"`. The `_norm_date()` function strips the stray dot before the day: `re.sub(r"([A-Za-z]{3}\.?)\s*\.\s*(\d)", r"\1 \2", s)`.
-- **Bold-text doubling**: BMO renders bold descriptions by printing each character twice at a slight offset. pdfplumber merges them into short overlapping tokens: `"C CA AS SH H A AD DV VA AN NC CE E"`. `_fix_doubled_text()` detects chains of 1–2 char tokens where each starts with the last char of the accumulated result and collapses them back to the original string (e.g. `"CASH ADVANCE"`).
+- **Stray-dot dates**: `_norm_date()` strips the stray dot before the day: `re.sub(r"([A-Za-z]{3}\.?)\s*\.\s*(\d)", r"\1 \2", s)`. Handles "Dec .18", "Mar .25", etc.
+- **Right-column eliminated by x-filter**: `x0 < 395` discards all "at a glance" summary content without any regex truncation.
 - **Cross-year statement**: the statement spans December (year N) through January (year N+1). The statement date is January of N+1, so `_extract_statement_year` overrides the base to return N. `_build_transactions` tracks `current_year` (updated from each `tx_date.year`) so that after the Dec→Jan rollover, all subsequent January transactions remain in year N+1.
-- **Continuation description lines**: some descriptions render a few pixels below their data row and appear as `". . DESCRIPTION"` lines. The parser appends these to the pending transaction's description.
-- **Amount regex**: `([\d,]+\.\d{2}(?:\s*CR?)?)` — the `CR?` suffix is fully optional (`(?:...)?`). Without this, plain amounts (e.g. `1,000.00`) fail to match.
 
 ### QFX output
 LOC uses `CREDITCARDMSGSRSV1` / `<CCACCTFROM>` (same as Mastercard) with `INTU.BID=00001` (bank product, not Mastercard's `00017`).
 
 ### Tested PDFs
 - `January 11, 2026.pdf` — 7 transactions (Dec 2025 – Jan 2026), balance check PASSED ($63,041.58 → $64,151.50)
+- `February 11, 2026.pdf` — 7 transactions, balance check PASSED
+- `March 11, 2026.pdf` — 11 transactions, balance check PASSED
+- `April 11, 2026.pdf` — 11 transactions (incl. 2 bold rows that extract_text merges), balance check PASSED ($65,716.93 → $280.72)
 
 ## Validator (`validator.py`)
 Runs after parsing. Routes by account type:
@@ -102,6 +111,9 @@ OFX v1.02 SGML format. Key rules learned from Quicken import testing:
 - `Account overview - BMO - 2.pdf` — 100 transactions, all balance-chain checks OK
 - `Account overview - BMO - 3.pdf` — 16 transactions, all balance-chain checks OK (Nov 14 sign fix verified)
 - `January 11, 2026.pdf` (LOC) — 7 transactions (Dec 2025 – Jan 2026), balance check PASSED
+- `February 11, 2026.pdf` (LOC) — 7 transactions, balance check PASSED
+- `March 11, 2026.pdf` (LOC) — 11 transactions, balance check PASSED
+- `April 11, 2026.pdf` (LOC) — 11 transactions, balance check PASSED
 
 ## Known Limitations
 - Account Overview PDFs with page breaks mid-transaction may produce flagged balance-chain entries; user can correct manually. In practice BMO does not break transactions across pages.

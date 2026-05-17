@@ -1,21 +1,23 @@
 """
 Parser for BMO Personal Line of Credit statements.
 
-Layout (text-only, no table structure):
-    Item no. | Trans date | Posting date | Description | Amount ($)
+Layout (word-box structure per transaction):
+    Primary band:     Item# | TransMonth | TransDay | PostMonth | PostDay | Amount
+    Description band: Word1 | Word2 | ... | [CR]
+    Dot band:         .  .   (stray dots from "Mar." — skipped)
 
 Quirks handled:
-- Two-column page: transactions on the left (x < 395), "at a glance" summary
-  on the right — the summary text bleeds into some lines and is stripped.
-- Date tokens like "Dec .18" and "Jan. .6" include stray dots that confuse
-  the base _parse_date; a normalisation step removes them.
 - Bold text is rendered by printing each character twice at a slight offset,
-  producing tokens like "C CA AS SH H A AD DV VA AN NC CE E".  The
-  _fix_doubled_text() function reconstructs the original string.
+  which causes pdfplumber's extract_text() to merge adjacent bold rows into
+  a single garbled line.  Fixed by using extract_words() with a 2pt y-tolerance
+  and processing each page independently — word boxes correctly separate bold
+  rows that extract_text() cannot.
+- Two-column page: transactions on the left (x < 395).  The x-filter eliminates
+  all right-column "at a glance" summary text.
+- Date tokens like "Dec .18" and "Mar .25" include stray leading dots on the
+  day component.  _norm_date() removes them before _parse_date().
 - Statement spans December of year N and January of year N+1.  The statement
   date shows N+1, so _extract_statement_year returns N (start of period).
-- Some description rows are rendered a few pixels below their data row; they
-  appear as ". . DESCRIPTION" continuation lines in the extracted text.
 """
 from __future__ import annotations
 
@@ -32,67 +34,14 @@ from app.parsers.base_parser import (
     ParseError,
 )
 
-# Transaction line: "1 Dec .18 Dec .18 CASH ADVANCE 1,000.00"
-# Dates can include extra dots: "Jan. .6", "Dec .18", "Jan 11"
-_DATE_PAT = r"[A-Za-z]{3}\.?\s*\.?\s*\d{1,2}"
-_TRANS_RE = re.compile(
-    r"^(\d+)\s+"
-    r"(" + _DATE_PAT + r")\s+"
-    r"(" + _DATE_PAT + r")\s*"
-    r"(.*?)\s*"
-    r"([\d,]+\.\d{2}(?:\s*CR?)?)\s*$",
-    re.IGNORECASE,
-)
-
-# Amount pattern (for filtering continuation lines)
-_AMOUNT_ONLY_RE = re.compile(r"^[\d,]+\.\d{2}(?:\s*CR?)?$", re.IGNORECASE)
-
 # New balance line: "New account balance, Jan. 11 $64,151.50"
 # Non-greedy .*? needed because the date portion contains digits (e.g. "Jan. 11")
 _NEW_BAL_RE = re.compile(
     r"[Nn]ew\s+account\s+balance.*?([\d,]+\.\d{2})", re.IGNORECASE
 )
 
-# Previous balance line (used to detect cross-year period)
-_PREV_BAL_RE = re.compile(r"[Pp]revious\s+balance[^A-Za-z]*([A-Za-z]{3})", re.IGNORECASE)
-
 # Statement date line: "Stmtdate:\nJan.11, 2026"
 _STMT_DATE_RE = re.compile(r"[Ss]tmt\s*date[:\s]*([A-Za-z]{3})", re.IGNORECASE)
-
-
-def _fix_doubled_text(text: str) -> str:
-    """
-    Fix BMO's bold-text doubling artifact.
-
-    BMO renders bold descriptions by printing each character twice at a
-    slight offset.  pdfplumber merges them into overlapping short tokens:
-        "C CA AS SH H A AD DV VA AN NC CE E"
-    This function detects chains of 1-2 char tokens where each new token
-    starts with the last char of the accumulated result, and collapses them:
-        "CASH ADVANCE"
-    """
-    tokens = text.split()
-    out: list[str] = []
-    i = 0
-    while i < len(tokens):
-        tok = tokens[i]
-        if len(tok) <= 2 and i + 1 < len(tokens):
-            chain = tok
-            j = i + 1
-            while (
-                j < len(tokens)
-                and len(tokens[j]) <= 2
-                and tokens[j][0] == chain[-1]
-            ):
-                chain += tokens[j][1:]
-                j += 1
-            if j > i + 2:          # genuine chain of 3+ tokens
-                out.append(chain)
-                i = j
-                continue
-        out.append(tok)
-        i += 1
-    return " ".join(out)
 
 
 def _norm_date(s: str) -> str:
@@ -100,6 +49,7 @@ def _norm_date(s: str) -> str:
 
     "Dec .18" → "Dec 18"
     "Jan. .6" → "Jan. 6"
+    "Mar .25" → "Mar 25"
     "Jan 11"  → "Jan 11"  (unchanged)
     """
     return re.sub(r"([A-Za-z]{3}\.?)\s*\.\s*(\d)", r"\1 \2", s.strip())
@@ -120,7 +70,9 @@ class BMOLOCParser(BaseParser):
         account_id = self._extract_account_number(full_text)
         new_balance = self._extract_new_balance(full_text)
 
-        rows = self._parse_text(full_text)
+        # Transaction rows are extracted via word-box grouping (not extract_text)
+        # to handle BMO's bold-text doubling artifact correctly.
+        rows = self._parse_text(pdf_path)
         transactions = self._build_transactions(rows, year)
 
         if not transactions:
@@ -170,59 +122,125 @@ class BMOLOCParser(BaseParser):
         return None
 
     # ------------------------------------------------------------------
-    # Text parsing
+    # Word-box extraction
     # ------------------------------------------------------------------
-    def _parse_text(self, full_text: str) -> list[tuple]:
+
+    def _parse_text(self, pdf_path: str) -> list[tuple]:
         """
+        Open pdf_path and extract transaction rows from each page using
+        extract_words() rather than extract_text().
+
         Returns a list of (item, txdate_str, postdate_str, description, amount_str).
         """
         rows: list[tuple] = []
-        pending: list | None = None
-
-        for raw in full_text.splitlines():
-            # 1. Strip "at a glance" right-column content.
-            #    That column uses '!' as a separator artifact in pdfplumber output.
-            line = raw.split("!")[0]
-            # Truncate everything that follows the transaction amount — the
-            # at-a-glance summary column is appended after it on some lines.
-            # Use \s+ so we only truncate when there IS something after the amount.
-            line = re.sub(r"([\d,]+\.\d{2}(?:\s*CR?)?)\s+.*$", r"\1", line, flags=re.IGNORECASE)
-            # Strip orphaned trailing + / - left after the amount was cut
-            line = re.sub(r"\s+[+\-]\s*$", "", line).strip()
-
-            if not line:
-                continue
-
-            # 2. Try to match a new transaction line.
-            m = _TRANS_RE.match(line)
-            if m:
-                if pending is not None:
-                    rows.append(tuple(pending))
-                desc = _fix_doubled_text(m.group(4).strip())
-                pending = [
-                    m.group(1),   # item no.
-                    m.group(2),   # trans date string
-                    m.group(3),   # posting date string
-                    desc,         # description (may be empty)
-                    m.group(5),   # amount string
-                ]
-                continue
-
-            # 3. Continuation description line: ". . SOME DESCRIPTION"
-            if pending is not None:
-                # Starts with dots/spaces then text — typical for offset descriptions
-                cont = re.match(r"^[.\s]+([A-Z].+)$", line, re.IGNORECASE)
-                if cont:
-                    extra = cont.group(1).strip()
-                    if extra and not _AMOUNT_ONLY_RE.match(extra):
-                        sep = " " if pending[3] else ""
-                        pending[3] = (pending[3] + sep + extra).strip()
-
-        if pending is not None:
-            rows.append(tuple(pending))
-
+        try:
+            with pdfplumber.open(pdf_path) as pdf:
+                for page in pdf.pages:
+                    rows.extend(self._rows_from_page(page))
+        except Exception as e:
+            raise ParseError(f"Failed to open PDF: {e}") from e
         return rows
 
+    def _rows_from_page(self, page) -> list[tuple]:
+        """
+        Extract transaction tuples from a single page.
+
+        Strategy
+        --------
+        pdfplumber's extract_text() merges adjacent bold rows because BMO
+        renders each bold character twice at a slight vertical offset (~3 pt).
+        extract_words() with y_tolerance=2 keeps those sub-rows separate, and
+        each one has a distinct y-anchor.  Filtering to x < 395 removes the
+        right-column "at a glance" summary entirely.
+
+        Each transaction consists of up to three consecutive y-bands:
+          Primary  (starts with item number):
+              [item#, txMonth, txDay, postMonth, postDay, amount_decimal]
+          Description (3 pt below primary):
+              [word, word, ..., CR]   — CR is present for credits
+          Dot band (6 pt below primary):
+              [., .]                  — artefact of "Mar." rendering; skipped
+
+        A transaction is flushed (appended to rows) when either:
+          - a dot band is encountered, or
+          - a new primary band starts (handles items without a dot band).
+        Non-primary, non-dot bands while no transaction is pending are
+        silently ignored (section headers, legal text, etc.).
+        """
+        # 1. Extract words from the left transaction column only.
+        words = page.extract_words(x_tolerance=2, y_tolerance=2)
+        words = [w for w in words if w["x0"] < 395]
+        words.sort(key=lambda w: (w["top"], w["x0"]))
+
+        # 2. Group words into y-bands (tolerance = 2 pt).
+        bands: list[tuple[float, list[str]]] = []
+        cur_y: float | None = None
+        cur_texts: list[str] = []
+        for w in words:
+            if cur_y is None or w["top"] - cur_y > 2:
+                if cur_texts:
+                    bands.append((cur_y, cur_texts))  # type: ignore[arg-type]
+                cur_y, cur_texts = w["top"], [w["text"]]
+            else:
+                cur_texts.append(w["text"])
+        if cur_texts:
+            bands.append((cur_y, cur_texts))  # type: ignore[arg-type]
+
+        # 3. Walk bands and assemble transactions.
+        rows: list[tuple] = []
+        pending: tuple | None = None   # (item_no, txdate, postdate, amount_base)
+        pending_cr: bool = False
+        desc_parts: list[str] = []
+
+        def _flush() -> None:
+            nonlocal pending, pending_cr, desc_parts
+            if pending is not None:
+                item_no, txdate, postdate, amount_base = pending
+                desc = " ".join(desc_parts).strip()
+                amount_str = amount_base + ("CR" if pending_cr else "")
+                rows.append((item_no, txdate, postdate, desc, amount_str))
+            pending = None
+            pending_cr = False
+            desc_parts = []
+
+        for _anchor_y, texts in bands:
+            # Dot-only band → flush the current transaction.
+            if all(t == "." for t in texts):
+                _flush()
+                continue
+
+            # Primary band: first token is a 1-2 digit item number,
+            # followed by at least 5 more tokens (month day month day amount).
+            if texts and re.match(r"^\d{1,2}$", texts[0]) and len(texts) >= 6:
+                _flush()
+                item_no   = texts[0]
+                txdate    = f"{texts[1]} {texts[2]}"
+                postdate  = f"{texts[3]} {texts[4]}"
+                amount_base = texts[5]
+                pending_cr  = False
+                desc_parts  = []
+                # Occasionally CR or extra tokens appear on the primary band.
+                extra = texts[6:]
+                if extra and extra[0].upper() == "CR":
+                    pending_cr = True
+                pending = (item_no, txdate, postdate, amount_base)
+                continue
+
+            # All other bands: if a transaction is pending, treat as
+            # description / CR continuation.
+            if pending is not None:
+                if texts and texts[-1].upper() == "CR":
+                    pending_cr = True
+                    texts = texts[:-1]
+                desc_parts.extend(t for t in texts if t != ".")
+
+        # Flush the last transaction (no trailing dot band on some pages).
+        _flush()
+        return rows
+
+    # ------------------------------------------------------------------
+    # Build Transaction objects
+    # ------------------------------------------------------------------
     def _build_transactions(
         self, rows: list[tuple], year: int
     ) -> list[Transaction]:
@@ -232,7 +250,7 @@ class BMOLOCParser(BaseParser):
 
         for _item, txdate_str, postdate_str, desc, amount_str in rows:
             # Normalise dates (strip stray dots before the day number)
-            txdate_norm = _norm_date(txdate_str)
+            txdate_norm   = _norm_date(txdate_str)
             postdate_norm = _norm_date(postdate_str)
 
             try:
@@ -240,7 +258,7 @@ class BMOLOCParser(BaseParser):
                 # Track year advances so subsequent same-month transactions stay
                 # in the correct year (e.g. multiple January rows all get year N+1)
                 current_year = tx_date.year
-                prev_month = tx_date.month
+                prev_month   = tx_date.month
             except ValueError:
                 continue
 
