@@ -191,6 +191,18 @@ class BMOLOCParser(BaseParser):
         pending: tuple | None = None   # (item_no, txdate, postdate, amount_base)
         pending_cr: bool = False
         desc_parts: list[str] = []
+        primary_y: float = 0.0        # y-anchor of the current primary band
+
+        def _expand(texts: list[str]) -> list[str]:
+            """Split merged month+day tokens: 'May1' → ['May', '1'], 'May11' → ['May', '11']."""
+            out: list[str] = []
+            for t in texts:
+                m = re.match(r"^([A-Za-z]{3}\.?)(\d{1,2})$", t)
+                if m:
+                    out.extend([m.group(1), m.group(2)])
+                else:
+                    out.append(t)
+            return out
 
         def _flush() -> None:
             nonlocal pending, pending_cr, desc_parts
@@ -209,6 +221,9 @@ class BMOLOCParser(BaseParser):
                 _flush()
                 continue
 
+            # Expand any merged month+day tokens before length checks.
+            texts = _expand(texts)
+
             # Primary band: first token is a 1-2 digit item number,
             # followed by at least 5 more tokens (month day month day amount).
             if texts and re.match(r"^\d{1,2}$", texts[0]) and len(texts) >= 6:
@@ -219,6 +234,7 @@ class BMOLOCParser(BaseParser):
                 amount_base = texts[5]
                 pending_cr  = False
                 desc_parts  = []
+                primary_y   = _anchor_y
                 # Occasionally CR or extra tokens appear on the primary band.
                 extra = texts[6:]
                 if extra and extra[0].upper() == "CR":
@@ -226,9 +242,10 @@ class BMOLOCParser(BaseParser):
                 pending = (item_no, txdate, postdate, amount_base)
                 continue
 
-            # All other bands: if a transaction is pending, treat as
-            # description / CR continuation.
-            if pending is not None:
+            # All other bands: only treat as description if within 10 pt of
+            # the primary band's y-anchor (prevents footer text from being
+            # appended to the last transaction when there is no dot band).
+            if pending is not None and _anchor_y - primary_y <= 10:
                 if texts and texts[-1].upper() == "CR":
                     pending_cr = True
                     texts = texts[:-1]
