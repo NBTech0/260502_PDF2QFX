@@ -183,13 +183,16 @@ def _cc_body(stmt: Statement, txn_block: str, dt_start: str, dt_end: str) -> str
 
 def write_qfx(statement: Statement, output_path: str) -> None:
     server_dt = _fmt_server_dt()
-    intu_bid = _BMO_INTU_BID_CC if statement.account_type == AccountType.CREDITCARD else _BMO_INTU_BID_BANK
+    # LOC uses the same QFX structure as Mastercard (CREDITCARDMSGSRSV1)
+    # but with the bank INTU.BID (00001) since it's a bank product.
+    is_cc_type = statement.account_type.value in ("CREDITCARD", "LOC")
+    intu_bid = _BMO_INTU_BID_CC if statement.account_type.value == "CREDITCARD" else _BMO_INTU_BID_BANK
     txn_block = _render_transactions(statement.transactions, statement.account_id)
     dt_start, dt_end = _date_range(statement.transactions)
 
     signon = _signon_block(server_dt, intu_bid)
 
-    if statement.account_type == AccountType.CREDITCARD:
+    if is_cc_type:
         body = _cc_body(statement, txn_block, dt_start, dt_end)
     else:
         body = _bank_body(statement, txn_block, dt_start, dt_end)

@@ -55,6 +55,8 @@ def validate_statement(statement: Statement, pdf_path: str) -> None:
 
     if statement.account_type == AccountType.CREDITCARD:
         _validate_cc(full_text, net, warnings)
+    elif statement.account_type == AccountType.LOC:
+        _validate_loc(full_text, net, warnings)
     else:
         _validate_bank(full_text, net, warnings,
                        current_balance=statement.ledger_balance)
@@ -84,6 +86,46 @@ def _validate_cc(text: str, net: float, warnings: list[str]) -> None:
     # Convention: balance = amount you OWE (positive).
     # Our transactions: charges are negative, payments positive.
     # new_balance = previous_balance - net  (net is negative when you spent more than paid)
+    expected_new = prev - net
+    diff = abs(expected_new - new_)
+
+    if diff <= _TOLERANCE:
+        warnings.append(
+            f"OK    Balance check PASSED  "
+            f"(${prev:,.2f} - (${net:+,.2f}) = ${expected_new:,.2f}, expected ${new_:,.2f})"
+        )
+    else:
+        warnings.append(
+            f"WARN  Balance check FAILED  "
+            f"Expected new balance ${expected_new:,.2f}, PDF says ${new_:,.2f}  "
+            f"(difference ${diff:,.2f}) ({_diff_hint(diff)})"
+        )
+
+
+def _validate_loc(text: str, net: float, warnings: list[str]) -> None:
+    """Validate a BMO Line of Credit statement.
+
+    LOC PDFs use 'Previous balance' and 'New account balance' (not 'New balance').
+    Balance convention: positive = amount owed; charges are negative in our model,
+    payments/credits positive, so: new_balance = previous_balance - net.
+    """
+    prev = _find_amount(
+        text,
+        r"[Pp]revious\s+balance[^\n]*?\$([\d,]+\.\d{2})",
+        r"[Pp]revious\s+balance[^\n]*([\d,]+\.\d{2})",
+    )
+    new_ = _find_amount(
+        text,
+        r"[Nn]ew\s+account\s+balance[^\n]*?\$([\d,]+\.\d{2})",
+        r"[Nn]ew\s+account\s+balance[^\n]*([\d,]+\.\d{2})",
+    )
+
+    if prev is None or new_ is None:
+        warnings.append("WARN  Could not find Previous/New Balance in LOC PDF — skipping balance check")
+        return
+
+    warnings.append(f"PDF   Previous Balance: ${prev:,.2f}   New Balance: ${new_:,.2f}")
+
     expected_new = prev - net
     diff = abs(expected_new - new_)
 

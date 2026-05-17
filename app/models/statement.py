@@ -11,6 +11,7 @@ class AccountType(Enum):
     CHECKING = "CHECKING"
     SAVINGS = "SAVINGS"
     CREDITCARD = "CREDITCARD"
+    LOC = "LOC"          # BMO Personal Line of Credit
 
 
 @dataclass

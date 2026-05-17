@@ -32,6 +32,8 @@ def detect_statement_type(pdf_path: str) -> AccountType:
 
     if "mastercard" in combined or "master card" in combined or "credit card" in combined:
         return AccountType.CREDITCARD
+    if "line of credit" in combined or "personal line" in combined:
+        return AccountType.LOC
     if "chequing" in combined or "checking" in combined:
         return AccountType.CHECKING
     if "savings" in combined or "smart saver" in combined or "high interest" in combined:

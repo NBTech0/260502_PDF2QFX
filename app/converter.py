@@ -6,6 +6,7 @@ from typing import Callable, Optional
 from app.models.statement import AccountType
 from app.parsers.bmo_account_overview import BMOAccountOverviewParser
 from app.parsers.bmo_bank import BMOBankParser
+from app.parsers.bmo_loc import BMOLOCParser
 from app.parsers.bmo_mastercard import BMOMastercardParser
 from app.parsers.detector import detect_statement_type, is_account_overview
 from app.validator import validate_statement
@@ -40,12 +41,15 @@ def convert_pdf_to_qfx(
         account_type = detect_statement_type(pdf_path)
         type_label = {
             AccountType.CREDITCARD: "BMO Mastercard",
-            AccountType.CHECKING: "BMO Chequing",
-            AccountType.SAVINGS: "BMO Savings",
+            AccountType.CHECKING:   "BMO Chequing",
+            AccountType.SAVINGS:    "BMO Savings",
+            AccountType.LOC:        "BMO Line of Credit",
         }.get(account_type, account_type.value)
         log(f"Detected: {type_label}")
         if account_type == AccountType.CREDITCARD:
             parser = BMOMastercardParser()
+        elif account_type == AccountType.LOC:
+            parser = BMOLOCParser()
         else:
             parser = BMOBankParser()
 
