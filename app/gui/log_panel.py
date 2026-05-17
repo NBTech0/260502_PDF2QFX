@@ -7,9 +7,9 @@ class LogPanel(ctk.CTkTextbox):
     """
     Append-only, thread-safe log widget.
 
-    log(message)               — normal text (default foreground)
-    log(message, level="warn") — orange text  (WARN lines)
-    log(message, level="error")— red text     (ERROR lines)
+    log(message)                — normal text (default foreground)
+    log(message, level="warn")  — orange text  (WARN lines)
+    log(message, level="error") — red text     (ERROR lines)
     """
 
     _TAG_COLORS = {
@@ -22,7 +22,8 @@ class LogPanel(ctk.CTkTextbox):
         kwargs.setdefault("wrap", "word")
         kwargs.setdefault("font", ("Consolas", 12))
         super().__init__(master, **kwargs)
-        # Configure colour tags on the underlying tk.Text widget
+        # Configure colour tags directly on the underlying tk.Text widget.
+        # Must be done after super().__init__() which creates self._textbox.
         for tag, colour in self._TAG_COLORS.items():
             self._textbox.tag_configure(tag, foreground=colour)
 
@@ -32,19 +33,20 @@ class LogPanel(ctk.CTkTextbox):
         self.after(0, self._append, text, level)
 
     def _append(self, text: str, level: str = "normal") -> None:
-        self.configure(state="normal")
+        # Work directly on the underlying tk.Text widget so that:
+        # (a) we can insert text with a tag in one atomic call, and
+        # (b) CTkTextbox theming does not override our tag colours.
+        tb = self._textbox
+        tb.configure(state="normal")
         if level in self._TAG_COLORS:
-            # Record the line index before inserting so we can tag just this line
-            line_before = self._textbox.index("end").split(".")[0]
-            self.insert("end", text)
-            line_after = self._textbox.index("end").split(".")[0]
-            self._textbox.tag_add(level, f"{line_before}.0", f"{line_after}.0")
+            tb.insert("end", text, (level,))
         else:
-            self.insert("end", text)
-        self.see("end")
-        self.configure(state="disabled")
+            tb.insert("end", text)
+        tb.see("end")
+        tb.configure(state="disabled")
 
     def clear(self) -> None:
-        self.configure(state="normal")
-        self.delete("1.0", "end")
-        self.configure(state="disabled")
+        tb = self._textbox
+        tb.configure(state="normal")
+        tb.delete("1.0", "end")
+        tb.configure(state="disabled")
