@@ -12,6 +12,7 @@ from app.converter import convert_pdf_to_qfx
 from app.gui.drop_zone import DropZone
 from app.gui.file_list import FileListWidget
 from app.gui.log_panel import LogPanel
+from app.quicken_launcher import open_in_quicken
 
 _CONFIG_PATH = os.path.join(
     os.environ.get("APPDATA", os.path.expanduser("~")),
@@ -28,9 +29,12 @@ def _load_config() -> dict:
 
 
 def _save_config(data: dict) -> None:
+    """Merge *data* into the persisted config (preserves unrelated keys)."""
     os.makedirs(os.path.dirname(_CONFIG_PATH), exist_ok=True)
+    existing = _load_config()
+    existing.update(data)
     with open(_CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+        json.dump(existing, f, indent=2)
 
 
 class App(ctk.CTk, TkinterDnD.DnDWrapper):
@@ -55,12 +59,18 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         self._output_dir = ctk.StringVar(value=saved_dir)
         self._output_dir.trace_add("write", self._on_output_dir_changed)
 
+        self._open_in_quicken = ctk.BooleanVar(value=cfg.get("open_in_quicken", False))
+        self._open_in_quicken.trace_add("write", self._on_open_in_quicken_changed)
+
         self._build_ui()
 
     def _on_output_dir_changed(self, *_) -> None:
         d = self._output_dir.get().strip()
         if os.path.isdir(d):
             _save_config({"output_dir": d})
+
+    def _on_open_in_quicken_changed(self, *_) -> None:
+        _save_config({"open_in_quicken": self._open_in_quicken.get()})
 
     def _build_ui(self) -> None:
         self.grid_rowconfigure(3, weight=2)   # file list grows
@@ -127,6 +137,13 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         ctk.CTkButton(folder_frame, text="Browse", width=80, command=self._browse_output).grid(
             row=0, column=2
         )
+
+        ctk.CTkCheckBox(
+            folder_frame,
+            text="Open in Quicken after successful conversion",
+            variable=self._open_in_quicken,
+            font=ctk.CTkFont(size=13),
+        ).grid(row=1, column=0, columnspan=3, padx=(0, 0), pady=(6, 0), sticky="w")
 
         # ── Separator ──────────────────────────────────────────────────────
         ctk.CTkFrame(self, height=2, fg_color=("gray70", "gray30")).grid(
@@ -199,9 +216,23 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         errors = 0
         for path in paths:
             self.after(0, self._file_list.set_status, path, "Converting...")
+
+            # Track whether any WARN line was emitted for this file
+            had_warning: list[bool] = [False]
+
+            def _cb(msg: str, _flag: list = had_warning) -> None:
+                if msg.startswith("WARN"):
+                    _flag[0] = True
+                self._log.log(msg)
+
             try:
-                convert_pdf_to_qfx(path, output_dir, progress_callback=self._log.log)
+                out_path = convert_pdf_to_qfx(path, output_dir, progress_callback=_cb)
                 self.after(0, self._file_list.set_status, path, "Done")
+
+                # Open in Quicken if the option is enabled and no warnings were raised
+                if self._open_in_quicken.get() and not had_warning[0]:
+                    open_in_quicken(out_path, log=self._log.log)
+
             except Exception as exc:
                 errors += 1
                 self.after(0, self._file_list.set_status, path, "Error")
