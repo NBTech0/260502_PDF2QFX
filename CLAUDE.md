@@ -1,7 +1,7 @@
 # BMO PDF to QFX Converter — Project Notes
 
 ## Overview
-Windows desktop app (Python 3.11+, CustomTkinter) that converts BMO Bank and BMO Mastercard PDF statements to Quicken QFX files. Entry point: `main.py`.
+Windows desktop app (Python 3.11+, CustomTkinter) that converts BMO Bank, BMO Mastercard, BMO Line of Credit (LOC), and BMO Account Overview PDF statements to Quicken QFX files. Entry point: `main.py`.
 
 ## Project Structure
 ```
@@ -18,6 +18,7 @@ app/
     detector.py          # Auto-detects statement type from PDF text
     bmo_bank.py          # Regular BMO bank statements (table layout)
     bmo_mastercard.py    # BMO Mastercard statements
+    bmo_loc.py           # BMO Personal Line of Credit statements (text layout)
     bmo_account_overview.py  # Browser-printed Account Overview PDFs (OCR)
   writers/
     qfx_writer.py        # Renders Statement → OFX v1.02 SGML .qfx
@@ -54,17 +55,38 @@ Handles browser-printed "Account Overview" PDFs — not true PDFs, rendered via 
 ### OCR sign issue (root cause documented)
 BMO's CSS renders the `-` sign in the "Money out" column at a slightly lower vertical position than the rest of the row. In a 300 DPI render this is ~52 px from the band anchor, just 2 px past the 50 px tolerance, so it falls into the year-continuation row. `_merge_wrapped_dates` now transfers it back.
 
+## Parser: BMO Line of Credit (`bmo_loc.py`)
+Handles BMO Personal Line of Credit monthly statements (e.g. `January 11, 2026.pdf`).
+
+### Key behaviours
+- **Two-column layout**: transactions on the left side; an "at a glance" summary on the right. pdfplumber inserts `!` characters at column boundaries — each line is truncated at the first `!` to strip the right column.
+- **Right-column overflow on transaction lines**: some transaction lines have the at-a-glance text appended after the amount (e.g. `1,000.00 - !Credit adjustments`). The line is further truncated at the first amount (`[\d,]+\.\d{2}(?:\s*CR?)?`) so everything after it is discarded.
+- **Stray-dot dates**: BMO renders dates as `"Dec .18"`, `"Jan. .6"`, `"Jan 11"`. The `_norm_date()` function strips the stray dot before the day: `re.sub(r"([A-Za-z]{3}\.?)\s*\.\s*(\d)", r"\1 \2", s)`.
+- **Bold-text doubling**: BMO renders bold descriptions by printing each character twice at a slight offset. pdfplumber merges them into short overlapping tokens: `"C CA AS SH H A AD DV VA AN NC CE E"`. `_fix_doubled_text()` detects chains of 1–2 char tokens where each starts with the last char of the accumulated result and collapses them back to the original string (e.g. `"CASH ADVANCE"`).
+- **Cross-year statement**: the statement spans December (year N) through January (year N+1). The statement date is January of N+1, so `_extract_statement_year` overrides the base to return N. `_build_transactions` tracks `current_year` (updated from each `tx_date.year`) so that after the Dec→Jan rollover, all subsequent January transactions remain in year N+1.
+- **Continuation description lines**: some descriptions render a few pixels below their data row and appear as `". . DESCRIPTION"` lines. The parser appends these to the pending transaction's description.
+- **Amount regex**: `([\d,]+\.\d{2}(?:\s*CR?)?)` — the `CR?` suffix is fully optional (`(?:...)?`). Without this, plain amounts (e.g. `1,000.00`) fail to match.
+
+### QFX output
+LOC uses `CREDITCARDMSGSRSV1` / `<CCACCTFROM>` (same as Mastercard) with `INTU.BID=00001` (bank product, not Mastercard's `00017`).
+
+### Tested PDFs
+- `January 11, 2026.pdf` — 7 transactions (Dec 2025 – Jan 2026), balance check PASSED ($63,041.58 → $64,151.50)
+
 ## Validator (`validator.py`)
-Runs after parsing. Checks:
-1. Transaction count and net amount vs PDF closing balance.
-2. **Balance-chain check**: for each consecutive pair of transactions verifies `balance[i] + amount[i+1] ≈ balance[i+1]` (tolerance $0.02). Flags mismatches as `WARN` lines; prints `CHAIN N checks: M OK, K flagged` summary.
+Runs after parsing. Routes by account type:
+- **CREDITCARD** → `_validate_cc`: checks Previous Balance / New Balance.
+- **LOC** → `_validate_loc`: checks "Previous balance" / "New account balance" (LOC-specific line labels).
+- **CHECKING / SAVINGS** → `_validate_bank` + balance-chain check.
+
+**Balance-chain check** (bank only): for each consecutive pair of transactions verifies `balance[i] + amount[i+1] ≈ balance[i+1]` (tolerance $0.02). Flags mismatches as `WARN` lines; prints `CHAIN N checks: M OK, K flagged` summary.
 
 Raw per-row balances are read from `txn.raw_row[4]` (the OCR'd balance column stored on each Transaction).
 
 ## QFX Writer (`qfx_writer.py`)
 OFX v1.02 SGML format. Key rules learned from Quicken import testing:
 
-- **`<INTU.BID>` must be present** in `<SONRS>` — `00001` for bank, `00017` for Mastercard. Removing it causes Quicken OL-221-A on import.
+- **`<INTU.BID>` must be present** in `<SONRS>` — `00001` for bank/LOC, `00017` for Mastercard. Removing it causes Quicken OL-221-A on import.
 - **`<LEDGERBAL>` must be present** for bank accounts — omitting it causes Quicken OL-221-A. Falls back to `0.00` if the PDF did not include a closing balance.
 - **`<MEMO>` is always written** (not just when description > 32 chars) — Quicken replaces `<NAME>` with the linked account name for transfer transactions (e.g. "TF …"), hiding the reference number. `<MEMO>` preserves the full description in the notes field.
 - `<NAME>` is capped at 32 chars; `<MEMO>` at 255 chars.
@@ -79,6 +101,7 @@ OFX v1.02 SGML format. Key rules learned from Quicken import testing:
 - `Account overview - BMO.pdf` — 100 transactions, all balance-chain checks OK
 - `Account overview - BMO - 2.pdf` — 100 transactions, all balance-chain checks OK
 - `Account overview - BMO - 3.pdf` — 16 transactions, all balance-chain checks OK (Nov 14 sign fix verified)
+- `January 11, 2026.pdf` (LOC) — 7 transactions (Dec 2025 – Jan 2026), balance check PASSED
 
 ## Known Limitations
 - Account Overview PDFs with page breaks mid-transaction may produce flagged balance-chain entries; user can correct manually. In practice BMO does not break transactions across pages.
