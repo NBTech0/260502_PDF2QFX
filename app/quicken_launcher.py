@@ -12,10 +12,6 @@ import subprocess
 import winreg
 from typing import Callable
 
-# os.startfile must be called from the main thread on some Python builds.
-# We use ShellExecute via ctypes so it is safe from any thread.
-import ctypes
-import ctypes.wintypes
 
 # Fallback install locations if registry lookup fails
 _KNOWN_PATHS = [
@@ -79,15 +75,18 @@ def is_quicken_running() -> bool:
 
 def _shell_open(path: str) -> None:
     """
-    Open *path* via Windows ShellExecuteW — safe from any thread, equivalent
-    to double-clicking the file in Explorer.  This goes through the registered
-    .qfx file association and respects Quicken's single-instance DDE handler.
+    Open *path* via 'cmd /c start' — works from any thread, equivalent to
+    double-clicking the file in Explorer.  cmd's built-in start command goes
+    through the Windows Shell file-association layer and correctly handles
+    Quicken's DDE single-instance mechanism.
     """
-    shell32 = ctypes.windll.shell32
-    # ShellExecuteW(hwnd, verb, file, params, directory, show)
-    ret = shell32.ShellExecuteW(None, "open", path, None, None, 1)
-    if ret <= 32:
-        raise OSError(f"ShellExecuteW returned {ret} for {path!r}")
+    # The empty-string first argument after 'start' is the window title;
+    # required so that paths containing spaces aren't mis-parsed as the title.
+    subprocess.Popen(
+        ["cmd", "/c", "start", "", path],
+        close_fds=True,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
 
 
 def open_in_quicken(

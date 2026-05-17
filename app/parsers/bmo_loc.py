@@ -147,7 +147,7 @@ class BMOLOCParser(BaseParser):
         m = _STMT_DATE_RE.search(full_text)
         if m:
             mon = MONTH_MAP.get(m.group(1)[:3].lower(), 0)
-            if 1 <= mon <= 3:          # January–March → start year is prior year
+            if mon == 1:               # January only: statement spans Dec(N)/Jan(N+1)
                 return stmt_year - 1
         return stmt_year
 
