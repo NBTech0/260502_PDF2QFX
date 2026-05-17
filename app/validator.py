@@ -114,6 +114,21 @@ def _validate_loc(text: str, net: float, warnings: list[str]) -> None:
         r"[Pp]revious\s+balance[^\n]*?\$([\d,]+\.\d{2})",
         r"[Pp]revious\s+balance[^\n]*([\d,]+\.\d{2})",
     )
+    if prev is None:
+        # Some months split "Previous balance" and its dollar amount across
+        # lines (e.g. May 2026: "!Previous balance ,Apr\n.\n11 !$280.72").
+        # Use DOTALL so '.' crosses newlines; limit to 80 chars to avoid
+        # accidentally matching the new-balance line.
+        m = re.search(
+            r"[Pp]revious\s+balance.{0,80}?\$([\d,]+\.\d{2})",
+            text,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if m:
+            raw = re.sub(r"[^\d.]", "", m.group(1))
+            if raw:
+                prev = float(raw)
+
     new_ = _find_amount(
         text,
         r"[Nn]ew\s+account\s+balance[^\n]*?\$([\d,]+\.\d{2})",
